@@ -1,4 +1,4 @@
--- Made By Masterp (Enhanced: Requeue if failed)
+-- Made By Masterp (Enhanced: Requeue if failed, Add Limit, Handle Special Errors)
 repeat task.wait() until game:IsLoaded() and game.Players.LocalPlayer.Character
 
 local Players = game:GetService("Players")
@@ -7,6 +7,9 @@ local LocalPlayer = Players.LocalPlayer
 
 local PlayersQueue = {}
 local isProcessing = false
+local RequeueCount = {}
+local REQUEUE_LIMIT = 3 -- จำนวนครั้งสูงสุดที่ Requeue
+local FRIEND_LIMIT = 200 -- จำนวนเพื่อนสูงสุดใน Roblox
 
 -- เพิ่มผู้เล่นลงคิว (ไม่รวมตัวเอง)
 local function addPlayer(player)
@@ -36,6 +39,14 @@ for _, player in ipairs(Players:GetPlayers()) do
 	addPlayer(player)
 end
 
+-- ฟังก์ชันเช็คเพื่อนเต็มหรือยัง
+local function isFriendLimitReached()
+	local success, friends = pcall(function()
+		return LocalPlayer:GetFriendsOnline()
+	end)
+	return success and #friends >= FRIEND_LIMIT
+end
+
 -- ส่งคำขอเป็นเพื่อนทีละคน
 local function processQueue()
 	while true do
@@ -46,6 +57,17 @@ local function processQueue()
 			table.remove(PlayersQueue, 1)
 
 			if player and player.Parent == Players then
+				-- เช็ค friend เต็ม
+				if isFriendLimitReached() then
+					print("❗ Friend limit reached. Stopping friend requests.")
+					StarterGui:SetCore("SendNotification", {
+						Title = "Friend Limit",
+						Text = "You have reached your friend limit.",
+						Duration = 4
+					})
+					break -- ออกจาก while true
+				end
+
 				local success, result = pcall(function()
 					return LocalPlayer:RequestFriendship(player)
 				end)
@@ -58,14 +80,29 @@ local function processQueue()
 						Duration = 3
 					})
 				else
-					print("❌ Failed to send friend request to: " .. player.Name .. " - Requeuing.")
-					StarterGui:SetCore("SendNotification", {
-						Title = "Friend Request Failed",
-						Text = player.Name,
-						Duration = 3
-					})
-					-- เพิ่มกลับไปในคิว
-					table.insert(PlayersQueue, player)
+					local msg = tostring(result)
+					-- ถ้า already friends หรือกำลัง pending อยู่ จะไม่ requeue
+					if msg:find("already friends") or msg:find("pending") then
+						print("⚠️ Already friends or pending: " .. player.Name)
+					else
+						RequeueCount[player.UserId] = (RequeueCount[player.UserId] or 0) + 1
+						if RequeueCount[player.UserId] <= REQUEUE_LIMIT then
+							print("❌ Failed to send friend request to: " .. player.Name .. " - Requeuing ("..RequeueCount[player.UserId]..")")
+							StarterGui:SetCore("SendNotification", {
+								Title = "Friend Request Failed",
+								Text = player.Name .. " (Retry: "..RequeueCount[player.UserId]..")",
+								Duration = 3
+							})
+							table.insert(PlayersQueue, player)
+						else
+							print("🚫 Skipping " .. player.Name .. " after "..REQUEUE_LIMIT.." failed attempts.")
+							StarterGui:SetCore("SendNotification", {
+								Title = "Friend Request Skipped",
+								Text = player.Name,
+								Duration = 3
+							})
+						end
+					end
 				end
 			else
 				print("⚠️ Player is no longer in game: " .. (player and player.Name or "Unknown"))
