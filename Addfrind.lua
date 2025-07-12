@@ -1,4 +1,4 @@
--- Made By Masterp (Enhanced: Single-send with success check)
+-- Made By Masterp (Enhanced: Requeue if failed)
 repeat task.wait() until game:IsLoaded() and game.Players.LocalPlayer.Character
 
 local Players = game:GetService("Players")
@@ -30,19 +30,20 @@ end
 Players.PlayerAdded:Connect(addPlayer)
 Players.PlayerRemoving:Connect(removePlayer)
 
--- ใส่ผู้เล่นตอนแรก
+-- ใส่ผู้เล่นตอนเริ่ม
 print("============== << INITIALIZING QUEUE >> ==============")
 for _, player in ipairs(Players:GetPlayers()) do
 	addPlayer(player)
 end
 
--- ส่งคำขอเป็นเพื่อนทีละคน พร้อมตรวจสอบผลลัพธ์
+-- ส่งคำขอเป็นเพื่อนทีละคน
 local function processQueue()
 	while true do
 		task.wait(1)
 		if not isProcessing and #PlayersQueue > 0 then
 			isProcessing = true
 			local player = PlayersQueue[1]
+			table.remove(PlayersQueue, 1)
 
 			if player and player.Parent == Players then
 				local success, result = pcall(function()
@@ -57,20 +58,21 @@ local function processQueue()
 						Duration = 3
 					})
 				else
-					print("❌ Failed to send friend request to: " .. player.Name)
+					print("❌ Failed to send friend request to: " .. player.Name .. " - Requeuing.")
 					StarterGui:SetCore("SendNotification", {
 						Title = "Friend Request Failed",
 						Text = player.Name,
 						Duration = 3
 					})
+					-- เพิ่มกลับไปในคิว
+					table.insert(PlayersQueue, player)
 				end
 			else
 				print("⚠️ Player is no longer in game: " .. (player and player.Name or "Unknown"))
 			end
 
-			table.remove(PlayersQueue, 1)
 			isProcessing = false
-			task.wait(3) -- รอระยะห่างก่อนส่งคนถัดไป
+			task.wait(3) -- รอระยะก่อนเริ่มรอบใหม่
 		end
 	end
 end
