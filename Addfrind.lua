@@ -14,7 +14,6 @@ local RequeueCount = {}
 
 -- ตั้งค่า
 local REQUEUE_LIMIT = 3
-local FRIEND_LIMIT = 50 -- หยุดเมื่อมีเพื่อน 50 คน
 local MIN_WAIT = 60 -- 60 วินาที
 local MAX_WAIT = 120 -- 120 วินาที
 local RATE_LIMIT_PAUSE = 300 -- พัก 5 นาที (300 วินาที) เมื่อเจอ rate limit
@@ -24,32 +23,7 @@ local function getRandomWait()
     return math.random(MIN_WAIT, MAX_WAIT)
 end
 
--- ฟังก์ชันเช็คจำนวนเพื่อนปัจจุบัน
-local function getCurrentFriendCount()
-    local success, result = pcall(function()
-        -- ใช้ HTTP request เพื่อเช็คจำนวนเพื่อนจริง
-        local url = "https://friends.roblox.com/v1/users/" .. LocalPlayer.UserId .. "/friends/count"
-        local response = HttpService:GetAsync(url)
-        local data = HttpService:JSONDecode(response)
-        return data.count or 0
-    end)
-    
-    if success then
-        return result
-    else
-        print("⚠️ ไม่สามารถเช็คจำนวนเพื่อนได้, ใช้วิธีสำรอง...")
-        -- วิธีสำรอง: นับจาก GetFriendsOnline (ไม่แม่นยำ)
-        local friends = LocalPlayer:GetFriendsOnline()
-        return #friends
-    end
-end
-
--- ฟังก์ชันเช็คว่าถึง friend limit หรือยัง
-local function isFriendLimitReached()
-    local currentCount = getCurrentFriendCount()
-    print("📊 จำนวนเพื่อนปัจจุบัน:", currentCount, "/", FRIEND_LIMIT)
-    return currentCount >= FRIEND_LIMIT
-end
+-- ลบฟังก์ชันเช็ค friend limit ออกตามที่ขอ
 
 -- เพิ่มผู้เล่นลงคิว (ไม่รวมตัวเอง)
 local function addPlayer(player)
@@ -94,8 +68,14 @@ local function sendFriendRequest(player)
     return success, result
 end
 
--- ฟังก์ชันตรวจสอบประเภทของ error
-local function handleError(player, result)
+-- ฟังก์ชันตรวจสอบประเภทของ error และ success
+local function handleResult(player, success, result)
+    -- ถ้า success = true แสดงว่าส่งสำเร็จแน่นอน
+    if success == true then
+        return "success"
+    end
+    
+    -- ถ้า success = false หรือ result มี error message
     local errorMsg = tostring(result):lower()
     
     -- เช็คว่าเป็น rate limiting หรือไม่
@@ -104,13 +84,19 @@ local function handleError(player, result)
     end
     
     -- เช็คว่าเป็นเพื่อนอยู่แล้วหรือ pending
-    if errorMsg:find("already friends") or errorMsg:find("pending") then
+    if errorMsg:find("already friends") or errorMsg:find("pending") or errorMsg:find("friend request sent") then
         return "already_friends"
     end
     
     -- เช็คว่า friend limit เต็ม
     if errorMsg:find("friend limit") or errorMsg:find("too many friends") then
         return "friend_limit_full"
+    end
+    
+    -- ถ้าไม่มี error message ชัดเจน แต่ success = false
+    -- อาจเป็นการส่งสำเร็จแต่ API return ผิด
+    if errorMsg == "false" or errorMsg == "" or errorMsg == "nil" then
+        return "possible_success"
     end
     
     -- Error อื่นๆ
@@ -123,17 +109,6 @@ local function processQueue()
         if #PlayersQueue > 0 and not isProcessing then
             isProcessing = true
             
-            -- เช็ค friend limit ก่อนเริ่ม
-            if isFriendLimitReached() then
-                print("🛑 ถึงจำนวนเพื่อนสูงสุดแล้ว (" .. FRIEND_LIMIT .. ") หยุดการทำงาน")
-                StarterGui:SetCore("SendNotification", {
-                    Title = "Friend Limit Reached",
-                    Text = "มีเพื่อน " .. FRIEND_LIMIT .. " คนแล้ว",
-                    Duration = 5
-                })
-                break
-            end
-            
             local player = PlayersQueue[1]
             table.remove(PlayersQueue, 1)
             
@@ -141,9 +116,10 @@ local function processQueue()
                 print("🔄 กำลังส่ง friend request ไปยัง: " .. player.Name)
                 
                 local success, result = sendFriendRequest(player)
+                local resultType = handleResult(player, success, result)
                 
-                if success and result == true then
-                    -- ส่งสำเร็จ
+                if resultType == "success" or resultType == "possible_success" then
+                    -- ส่งสำเร็จ (รวมกรณีที่อาจสำเร็จแต่ API ตอบผิด)
                     print("✅ ส่ง friend request ไปยัง: " .. player.Name .. " สำเร็จ")
                     StarterGui:SetCore("SendNotification", {
                         Title = "Friend Request Sent ✅",
@@ -154,59 +130,56 @@ local function processQueue()
                     -- ล้างข้อมูล requeue
                     RequeueCount[player.UserId] = nil
                     
-                else
-                    -- ส่งไม่สำเร็จ
-                    local errorType = handleError(player, result)
+                elseif resultType == "rate_limit" then
+                    print("⏸️ เจอ Rate Limit! พักการทำงาน " .. RATE_LIMIT_PAUSE .. " วินาที")
+                    StarterGui:SetCore("SendNotification", {
+                        Title = "Rate Limited ⏸️",
+                        Text = "พัก 5 นาที",
+                        Duration = 5
+                    })
                     
-                    if errorType == "rate_limit" then
-                        print("⏸️ เจอ Rate Limit! พักการทำงาน " .. RATE_LIMIT_PAUSE .. " วินาที")
+                    -- ใส่ player กลับไปที่หัวคิว
+                    table.insert(PlayersQueue, 1, player)
+                    
+                    isProcessing = false
+                    task.wait(RATE_LIMIT_PAUSE)
+                    continue
+                    
+                elseif resultType == "already_friends" then
+                    print("👥 " .. player.Name .. " เป็นเพื่อนอยู่แล้วหรือรอการยืนยัน")
+                    -- ไม่ต้องแจ้งเตือน เพราะไม่ใช่ error จริง
+                    
+                elseif resultType == "friend_limit_full" then
+                    print("🛑 Friend limit เต็มแล้ว หยุดการทำงาน")
+                    StarterGui:SetCore("SendNotification", {
+                        Title = "Friend Limit Full 🛑",
+                        Text = "ไม่สามารถเพิ่มเพื่อนได้แล้ว",
+                        Duration = 5
+                    })
+                    break
+                    
+                else
+                    -- Error อื่นๆ ที่เป็น error จริง
+                    RequeueCount[player.UserId] = (RequeueCount[player.UserId] or 0) + 1
+                    
+                    if RequeueCount[player.UserId] <= REQUEUE_LIMIT then
+                        print("❌ ส่ง friend request ไปยัง: " .. player.Name .. " ไม่สำเร็จ - ลองใหม่ครั้งที่ " .. RequeueCount[player.UserId])
+                        print("🔍 Error detail:", tostring(result))
                         StarterGui:SetCore("SendNotification", {
-                            Title = "Rate Limited ⏸️",
-                            Text = "พัก 5 นาที",
-                            Duration = 5
+                            Title = "Friend Request Failed ❌",
+                            Text = player.Name .. " (ลองใหม่: " .. RequeueCount[player.UserId] .. ")",
+                            Duration = 3
                         })
                         
-                        -- ใส่ player กลับไปที่หัวคิว
-                        table.insert(PlayersQueue, 1, player)
-                        
-                        isProcessing = false
-                        task.wait(RATE_LIMIT_PAUSE)
-                        continue
-                        
-                    elseif errorType == "already_friends" then
-                        print("👥 " .. player.Name .. " เป็นเพื่อนอยู่แล้วหรือรอการยืนยัน")
-                        
-                    elseif errorType == "friend_limit_full" then
-                        print("🛑 Friend limit เต็มแล้ว หยุดการทำงาน")
-                        StarterGui:SetCore("SendNotification", {
-                            Title = "Friend Limit Full 🛑",
-                            Text = "ไม่สามารถเพิ่มเพื่อนได้แล้ว",
-                            Duration = 5
-                        })
-                        break
-                        
+                        -- ใส่กลับไปในคิว
+                        table.insert(PlayersQueue, player)
                     else
-                        -- Error อื่นๆ
-                        RequeueCount[player.UserId] = (RequeueCount[player.UserId] or 0) + 1
-                        
-                        if RequeueCount[player.UserId] <= REQUEUE_LIMIT then
-                            print("❌ ส่ง friend request ไปยัง: " .. player.Name .. " ไม่สำเร็จ - ลองใหม่ครั้งที่ " .. RequeueCount[player.UserId])
-                            StarterGui:SetCore("SendNotification", {
-                                Title = "Friend Request Failed ❌",
-                                Text = player.Name .. " (ลองใหม่: " .. RequeueCount[player.UserId] .. ")",
-                                Duration = 3
-                            })
-                            
-                            -- ใส่กลับไปในคิว
-                            table.insert(PlayersQueue, player)
-                        else
-                            print("🚫 ข้าม " .. player.Name .. " หลังจากลองไม่สำเร็จ " .. REQUEUE_LIMIT .. " ครั้ง")
-                            StarterGui:SetCore("SendNotification", {
-                                Title = "Player Skipped 🚫",
-                                Text = player.Name,
-                                Duration = 3
-                            })
-                        end
+                        print("🚫 ข้าม " .. player.Name .. " หลังจากลองไม่สำเร็จ " .. REQUEUE_LIMIT .. " ครั้ง")
+                        StarterGui:SetCore("SendNotification", {
+                            Title = "Player Skipped 🚫",
+                            Text = player.Name,
+                            Duration = 3
+                        })
                     end
                 end
             else
@@ -225,14 +198,13 @@ local function processQueue()
         end
     end
     
-    print("🏁 จบการทำงาน - ไม่มีผู้เล่นในคิวหรือถึง friend limit แล้ว")
+    print("🏁 จบการทำงาน - ไม่มีผู้เล่นในคิวแล้ว")
 end
 
 -- เริ่มลูปประมวลผล
 print("🚀 เริ่มต้นระบบส่ง Friend Request")
 print("⚙️ ตั้งค่า:")
 print("   - รอระหว่างการส่ง: " .. MIN_WAIT .. "-" .. MAX_WAIT .. " วินาที")
-print("   - Friend limit: " .. FRIEND_LIMIT .. " คน")
 print("   - ลองซ้ำสูงสุด: " .. REQUEUE_LIMIT .. " ครั้ง")
 print("   - พักเมื่อ rate limit: " .. RATE_LIMIT_PAUSE .. " วินาที")
 
