@@ -1,6 +1,6 @@
 -- Enhanced Friend Request Script with Proper Error Handling
 -- Made By Masterp (Fixed by Assistant)
-
+wait(30)
 repeat task.wait() until game:IsLoaded() and game.Players.LocalPlayer.Character
 
 local Players = game:GetService("Players")
