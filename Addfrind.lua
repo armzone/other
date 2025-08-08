@@ -1,29 +1,30 @@
--- Enhanced Friend Request Script with Proper Error Handling
--- Made By Masterp (Fixed by Assistant)
+-- Enhanced Friend Request Script with Async Handling (No Game Freezing)
+-- Made By Masterp (Fixed by Assistant) 
 wait(30)
 repeat task.wait() until game:IsLoaded() and game.Players.LocalPlayer.Character
 
 local Players = game:GetService("Players")
 local StarterGui = game:GetService("StarterGui")
 local HttpService = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
 
 local PlayersQueue = {}
 local isProcessing = false
 local RequeueCount = {}
+local lastRequestTime = 0
 
 -- ตั้งค่า
 local REQUEUE_LIMIT = 3
-local MIN_WAIT = 60 -- 60 วินาที
-local MAX_WAIT = 120 -- 120 วินาที
+local MIN_WAIT = 90 -- เพิ่มเป็น 90 วินาที เพื่อหลีกเลี่ยง rate limit
+local MAX_WAIT = 150 -- เพิ่มเป็น 150 วินาที
 local RATE_LIMIT_PAUSE = 300 -- พัก 5 นาที (300 วินาที) เมื่อเจอ rate limit
+local REQUEST_COOLDOWN = 10 -- คูลดาวน์ขั้นต่ำระหว่างการส่งแต่ละครั้ง (10 วินาที)
 
 -- ฟังก์ชันสุ่มเวลารอ
 local function getRandomWait()
     return math.random(MIN_WAIT, MAX_WAIT)
 end
-
--- ลบฟังก์ชันเช็ค friend limit ออกตามที่ขอ
 
 -- เพิ่มผู้เล่นลงคิว (ไม่รวมตัวเอง)
 local function addPlayer(player)
@@ -59,13 +60,14 @@ for _, player in ipairs(Players:GetPlayers()) do
     addPlayer(player)
 end
 
--- ฟังก์ชันส่งคำขอเป็นเพื่อน
-local function sendFriendRequest(player)
-    local success, result = pcall(function()
-        return LocalPlayer:RequestFriendship(player)
+-- ฟังก์ชันส่งคำขอเป็นเพื่อนแบบ async
+local function sendFriendRequestAsync(player)
+    return task.spawn(function()
+        local success, result = pcall(function()
+            return LocalPlayer:RequestFriendship(player)
+        end)
+        return success, result
     end)
-    
-    return success, result
 end
 
 -- ฟังก์ชันตรวจสอบประเภทของ error และ success
@@ -103,11 +105,28 @@ local function handleResult(player, success, result)
     return "other_error"
 end
 
+-- ฟังก์ชันรอแบบไม่บล็อกเกม
+local function smartWait(duration)
+    local startTime = tick()
+    repeat
+        task.wait(0.1) -- รอ 0.1 วินาที แล้วเช็คใหม่
+    until tick() - startTime >= duration
+end
+
 -- ส่งคำขอเป็นเพื่อนทีละคน
 local function processQueue()
     while true do
         if #PlayersQueue > 0 and not isProcessing then
+            -- เช็คว่าพอเวลาส่งครั้งต่อไปหรือยัง
+            local currentTime = tick()
+            if currentTime - lastRequestTime < REQUEST_COOLDOWN then
+                local remainingCooldown = REQUEST_COOLDOWN - (currentTime - lastRequestTime)
+                print("⏰ รอคูลดาวน์อีก " .. math.ceil(remainingCooldown) .. " วินาที...")
+                smartWait(remainingCooldown)
+            end
+            
             isProcessing = true
+            lastRequestTime = tick()
             
             local player = PlayersQueue[1]
             table.remove(PlayersQueue, 1)
@@ -115,83 +134,98 @@ local function processQueue()
             if player and player.Parent == Players then
                 print("🔄 กำลังส่ง friend request ไปยัง: " .. player.Name)
                 
-                local success, result = sendFriendRequest(player)
-                local resultType = handleResult(player, success, result)
-                
-                if resultType == "success" or resultType == "possible_success" then
-                    -- ส่งสำเร็จ (รวมกรณีที่อาจสำเร็จแต่ API ตอบผิด)
-                    print("✅ ส่ง friend request ไปยัง: " .. player.Name .. " สำเร็จ")
-                    StarterGui:SetCore("SendNotification", {
-                        Title = "Friend Request Sent ✅",
-                        Text = player.Name,
-                        Duration = 3
-                    })
+                -- ส่งคำขอแบบ async เพื่อไม่ให้เกมค้าง
+                local requestThread = task.spawn(function()
+                    local success, result = pcall(function()
+                        return LocalPlayer:RequestFriendship(player)
+                    end)
                     
-                    -- ล้างข้อมูล requeue
-                    RequeueCount[player.UserId] = nil
+                    local resultType = handleResult(player, success, result)
                     
-                elseif resultType == "rate_limit" then
-                    print("⏸️ เจอ Rate Limit! พักการทำงาน " .. RATE_LIMIT_PAUSE .. " วินาที")
-                    StarterGui:SetCore("SendNotification", {
-                        Title = "Rate Limited ⏸️",
-                        Text = "พัก 5 นาที",
-                        Duration = 5
-                    })
-                    
-                    -- ใส่ player กลับไปที่หัวคิว
-                    table.insert(PlayersQueue, 1, player)
-                    
-                    isProcessing = false
-                    task.wait(RATE_LIMIT_PAUSE)
-                    continue
-                    
-                elseif resultType == "already_friends" then
-                    print("👥 " .. player.Name .. " เป็นเพื่อนอยู่แล้วหรือรอการยืนยัน")
-                    -- ไม่ต้องแจ้งเตือน เพราะไม่ใช่ error จริง
-                    
-                elseif resultType == "friend_limit_full" then
-                    print("🛑 Friend limit เต็มแล้ว หยุดการทำงาน")
-                    StarterGui:SetCore("SendNotification", {
-                        Title = "Friend Limit Full 🛑",
-                        Text = "ไม่สามารถเพิ่มเพื่อนได้แล้ว",
-                        Duration = 5
-                    })
-                    break
-                    
-                else
-                    -- Error อื่นๆ ที่เป็น error จริง
-                    RequeueCount[player.UserId] = (RequeueCount[player.UserId] or 0) + 1
-                    
-                    if RequeueCount[player.UserId] <= REQUEUE_LIMIT then
-                        print("❌ ส่ง friend request ไปยัง: " .. player.Name .. " ไม่สำเร็จ - ลองใหม่ครั้งที่ " .. RequeueCount[player.UserId])
-                        print("🔍 Error detail:", tostring(result))
+                    if resultType == "success" or resultType == "possible_success" then
+                        -- ส่งสำเร็จ
+                        print("✅ ส่ง friend request ไปยัง: " .. player.Name .. " สำเร็จ")
                         StarterGui:SetCore("SendNotification", {
-                            Title = "Friend Request Failed ❌",
-                            Text = player.Name .. " (ลองใหม่: " .. RequeueCount[player.UserId] .. ")",
-                            Duration = 3
-                        })
-                        
-                        -- ใส่กลับไปในคิว
-                        table.insert(PlayersQueue, player)
-                    else
-                        print("🚫 ข้าม " .. player.Name .. " หลังจากลองไม่สำเร็จ " .. REQUEUE_LIMIT .. " ครั้ง")
-                        StarterGui:SetCore("SendNotification", {
-                            Title = "Player Skipped 🚫",
+                            Title = "Friend Request Sent ✅",
                             Text = player.Name,
                             Duration = 3
                         })
+                        
+                        -- ล้างข้อมูล requeue
+                        RequeueCount[player.UserId] = nil
+                        
+                    elseif resultType == "rate_limit" then
+                        print("⏸️ เจอ Rate Limit! พักการทำงาน " .. RATE_LIMIT_PAUSE .. " วินาที")
+                        StarterGui:SetCore("SendNotification", {
+                            Title = "Rate Limited ⏸️",
+                            Text = "พัก 5 นาที",
+                            Duration = 5
+                        })
+                        
+                        -- ใส่ player กลับไปที่หัวคิว
+                        table.insert(PlayersQueue, 1, player)
+                        
+                        isProcessing = false
+                        smartWait(RATE_LIMIT_PAUSE)
+                        return
+                        
+                    elseif resultType == "already_friends" then
+                        print("👥 " .. player.Name .. " เป็นเพื่อนอยู่แล้วหรือรอการยืนยัน")
+                        
+                    elseif resultType == "friend_limit_full" then
+                        print("🛑 Friend limit เต็มแล้ว หยุดการทำงาน")
+                        StarterGui:SetCore("SendNotification", {
+                            Title = "Friend Limit Full 🛑",
+                            Text = "ไม่สามารถเพิ่มเพื่อนได้แล้ว",
+                            Duration = 5
+                        })
+                        isProcessing = false
+                        return
+                        
+                    else
+                        -- Error อื่นๆ
+                        RequeueCount[player.UserId] = (RequeueCount[player.UserId] or 0) + 1
+                        
+                        if RequeueCount[player.UserId] <= REQUEUE_LIMIT then
+                            print("❌ ส่ง friend request ไปยัง: " .. player.Name .. " ไม่สำเร็จ - ลองใหม่ครั้งที่ " .. RequeueCount[player.UserId])
+                            print("🔍 Error detail:", tostring(result))
+                            StarterGui:SetCore("SendNotification", {
+                                Title = "Friend Request Failed ❌",
+                                Text = player.Name .. " (ลองใหม่: " .. RequeueCount[player.UserId] .. ")",
+                                Duration = 3
+                            })
+                            
+                            -- ใส่กลับไปในคิว
+                            table.insert(PlayersQueue, player)
+                        else
+                            print("🚫 ข้าม " .. player.Name .. " หลังจากลองไม่สำเร็จ " .. REQUEUE_LIMIT .. " ครั้ง")
+                            StarterGui:SetCore("SendNotification", {
+                                Title = "Player Skipped 🚫",
+                                Text = player.Name,
+                                Duration = 3
+                            })
+                        end
                     end
+                    
+                    isProcessing = false
+                end)
+                
+                -- รอให้ request เสร็จ แต่ไม่บล็อกเกม
+                while isProcessing do
+                    task.wait(0.1)
                 end
+                
             else
                 print("⚠️ ผู้เล่นออกจากเกมแล้ว: " .. (player and player.Name or "Unknown"))
+                isProcessing = false
             end
             
-            isProcessing = false
-            
-            -- รอเวลาสุ่มก่อนประมวลผลคนต่อไป
-            local waitTime = getRandomWait()
-            print("⏳ รอ " .. waitTime .. " วินาที ก่อนส่งคนต่อไป...")
-            task.wait(waitTime)
+            -- รอเวลาสุ่มก่อนประมวลผลคนต่อไป (แต่ไม่บล็อกเกม)
+            if #PlayersQueue > 0 then
+                local waitTime = getRandomWait()
+                print("⏳ รอ " .. waitTime .. " วินาที ก่อนส่งคนต่อไป...")
+                smartWait(waitTime)
+            end
         else
             -- ไม่มีคิวหรือกำลังประมวลผล รอ 5 วินาที
             task.wait(5)
@@ -202,10 +236,11 @@ local function processQueue()
 end
 
 -- เริ่มลูปประมวลผล
-print("🚀 เริ่มต้นระบบส่ง Friend Request")
+print("🚀 เริ่มต้นระบบส่ง Friend Request (ป้องกันเกมค้าง)")
 print("⚙️ ตั้งค่า:")
 print("   - รอระหว่างการส่ง: " .. MIN_WAIT .. "-" .. MAX_WAIT .. " วินาที")
 print("   - ลองซ้ำสูงสุด: " .. REQUEUE_LIMIT .. " ครั้ง")
 print("   - พักเมื่อ rate limit: " .. RATE_LIMIT_PAUSE .. " วินาที")
+print("   - คูลดาวน์ขั้นต่ำ: " .. REQUEST_COOLDOWN .. " วินาที")
 
 task.spawn(processQueue)
