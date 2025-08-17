@@ -1,200 +1,108 @@
--- ✅ Auto Server Hop (เวอร์ชันง่าย + UI)
-local CONFIG = {
-    maxPlayers = 5,
-    checkInterval = 5, -- วินาที
-    teleportCooldown = 10, -- วินาที
-    findBy = "playing" -- "playing" = คนน้อย, "ping" = ping ต่ำ
-}
-
-local HttpService = game:GetService("HttpService")
-local TeleportService = game:GetService("TeleportService")
+local Http = game:GetService("HttpService")
+local TPS = game:GetService("TeleportService")
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
 local PlaceId = game.PlaceId
-local JobId = game.JobId
+local ServerType = "Public"
+local SortOrder = "Asc"
+local ExcludeFullGames = true
+local Limit = 100
 
+local ApiUrl = string.format("https://games.roblox.com/v1/games/%d/servers/%s?sortOrder=%s&excludeFullGames=%s&limit=%d",
+    PlaceId, ServerType, SortOrder, tostring(ExcludeFullGames), Limit)
+
+function ListServers(cursor)
+    local url = ApiUrl .. ((cursor and "&cursor="..cursor) or "")
+    local response = game:HttpGet(url)
+    return Http:JSONDecode(response)
+end
+
+-- สร้าง GUI ที่มี TextLabel สำหรับการนับถอยหลัง
 local player = Players.LocalPlayer
-local playerGui = player:WaitForChild("PlayerGui")
+local screenGui = Instance.new("ScreenGui")
+local countdownLabel = Instance.new("TextLabel")
+local countdownBackground = Instance.new("Frame") -- เพิ่มพื้นหลังให้กับ TextLabel
 
--- ตัวแปรสำหรับควบคุม
-local lastTeleport = 0
+screenGui.Name = "CountdownGui"
+screenGui.Parent = player:WaitForChild("PlayerGui")
 
--- 🎨 สร้าง UI แบบง่าย
-local function createUI()
-    -- ลบ UI เก่าถ้ามี
-    if playerGui:FindFirstChild("ServerHopUI") then
-        playerGui.ServerHopUI:Destroy()
-    end
+-- ตั้งค่า Frame สำหรับพื้นหลังของข้อความ
+countdownBackground.Name = "CountdownBackground"
+countdownBackground.Size = UDim2.new(0, 320, 0, 70) -- กำหนดขนาดของพื้นหลัง
+countdownBackground.Position = UDim2.new(0.5, -160, 0.5, -35) -- กำหนดตำแหน่งของพื้นหลัง
+countdownBackground.BackgroundColor3 = Color3.fromRGB(45, 45, 45) -- สีพื้นหลังเข้ม
+countdownBackground.BackgroundTransparency = 0.3 -- ความโปร่งใสเล็กน้อย
+countdownBackground.BorderSizePixel = 0 -- ไม่มีเส้นขอบ
+countdownBackground.Parent = screenGui
+
+-- กำหนดคุณสมบัติของ TextLabel
+countdownLabel.Name = "CountdownLabel"
+countdownLabel.Size = UDim2.new(1, -20, 1, -20) -- ขนาดลดลงเล็กน้อยเพื่อลงในพื้นหลัง
+countdownLabel.Position = UDim2.new(0, 10, 0, 10) -- ขยับให้ตรงกับพื้นหลัง
+countdownLabel.BackgroundColor3 = Color3.fromRGB(255, 255, 255) -- สีพื้นหลังของ TextLabel
+countdownLabel.BackgroundTransparency = 1 -- ทำให้โปร่งใสทั้งหมด
+countdownLabel.TextColor3 = Color3.fromRGB(0, 170, 255) -- สีข้อความ (สีฟ้าสดใส)
+countdownLabel.TextScaled = true -- ขยายขนาดข้อความให้พอดี
+countdownLabel.Font = Enum.Font.GothamBold -- เลือกฟอนต์
+countdownLabel.Text = "Checking server..."
+countdownLabel.Parent = countdownBackground
+
+-- เพิ่มเอฟเฟกต์มุมโค้งให้กับพื้นหลัง
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 15) -- มุมโค้งมน
+corner.Parent = countdownBackground
+
+-- เพิ่มเส้นขอบสีสวย ๆ รอบพื้นหลัง
+local stroke = Instance.new("UIStroke")
+stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+stroke.Thickness = 3 -- ความหนาของเส้นขอบ
+stroke.Color = Color3.fromRGB(0, 170, 255) -- สีฟ้าสดใส
+stroke.Parent = countdownBackground
+
+local foundSuitableServer = false
+
+-- วนลูปตรวจสอบเซิร์ฟเวอร์เรื่อย ๆ ทุก 10 วินาที
+while true do
+    local Servers, Server, Next
+    foundSuitableServer = false
     
-    local screenGui = Instance.new("ScreenGui")
-    screenGui.Name = "ServerHopUI"
-    screenGui.ResetOnSpawn = false
-    screenGui.Parent = playerGui
-
-    local mainFrame = Instance.new("Frame")
-    mainFrame.Size = UDim2.new(0, 250, 0, 80)
-    mainFrame.Position = UDim2.new(0, 10, 0, 10)
-    mainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-    mainFrame.BorderSizePixel = 0
-    mainFrame.Parent = screenGui
-
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 8)
-    corner.Parent = mainFrame
-
-    local titleLabel = Instance.new("TextLabel")
-    titleLabel.Size = UDim2.new(1, 0, 0, 30)
-    titleLabel.Position = UDim2.new(0, 0, 0, 0)
-    titleLabel.BackgroundTransparency = 1
-    titleLabel.Text = "🔄 Auto Server Hop (Simple)"
-    titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-    titleLabel.TextScaled = true
-    titleLabel.Font = Enum.Font.GothamBold
-    titleLabel.Parent = mainFrame
-
-    local statusLabel = Instance.new("TextLabel")
-    statusLabel.Size = UDim2.new(1, 0, 0, 25)
-    statusLabel.Position = UDim2.new(0, 0, 0, 35)
-    statusLabel.BackgroundTransparency = 1
-    statusLabel.Text = "🔵 กำลังเริ่มระบบ..."
-    statusLabel.TextColor3 = Color3.fromRGB(100, 200, 255)
-    statusLabel.TextScaled = true
-    statusLabel.Font = Enum.Font.Gotham
-    statusLabel.Parent = mainFrame
-
-    local infoLabel = Instance.new("TextLabel")
-    infoLabel.Size = UDim2.new(1, 0, 0, 20)
-    infoLabel.Position = UDim2.new(0, 0, 0, 60)
-    infoLabel.BackgroundTransparency = 1
-    infoLabel.Text = "Max: " .. CONFIG.maxPlayers .. " | หา: " .. (CONFIG.findBy == "playing" and "คนน้อย" or "Ping ต่ำ")
-    infoLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
-    infoLabel.TextScaled = true
-    infoLabel.Font = Enum.Font.Gotham
-    infoLabel.Parent = mainFrame
-
-    return statusLabel
-end
-
-local statusUI = createUI()
-
--- อัปเดท UI
-local function updateStatus(text, color)
-    if statusUI then
-        statusUI.Text = text
-        statusUI.TextColor3 = color
-    end
-    print(text)
-end
-
--- หาเซิร์ฟที่ดีที่สุด (แบบง่าย)
-local function findBestServer()
-    updateStatus("🔍 กำลังค้นหา server...", Color3.fromRGB(255, 255, 0))
-    
-    local success, response = pcall(function()
-        return HttpService:GetAsync("https://games.roblox.com/v1/games/" .. PlaceId .. "/servers/Public?limit=10")
-    end)
-    
-    if not success then
-        updateStatus("❌ ไม่สามารถเชื่อมต่อ API", Color3.fromRGB(255, 100, 100))
-        return nil
-    end
-    
-    local success2, data = pcall(function()
-        return HttpService:JSONDecode(response)
-    end)
-    
-    if not success2 or not data.data then
-        updateStatus("❌ ข้อมูล API ผิดพลาด", Color3.fromRGB(255, 100, 100))
-        return nil
-    end
-    
-    local servers = data.data
-    local bestServer = nil
-    
-    print("📊 พบ " .. #servers .. " servers ทั้งหมด")
-    
-    -- หา server ที่ดีที่สุด
-    for i, server in pairs(servers) do
-        -- ข้าม server ปัจจุบันและ server ที่คนเยอะเกิน
-        if server.id ~= JobId and server.playing <= CONFIG.maxPlayers and server.playing >= 1 then
-            if not bestServer then
-                bestServer = server
-                print("🎯 server แรกที่เจอ: " .. server.id .. " | คน: " .. server.playing .. " | ping: " .. (server.ping or "N/A"))
-            elseif server[CONFIG.findBy] < bestServer[CONFIG.findBy] then
-                bestServer = server
-                print("✅ เจอ server ดีกว่า: " .. server.id .. " | คน: " .. server.playing .. " | ping: " .. (server.ping or "N/A"))
+    repeat
+        Servers = ListServers(Next)
+        for _, s in ipairs(Servers.data) do
+            if s.playing <= 5 then  -- ตรวจสอบว่ามีผู้เล่นน้อยกว่าหรือเท่ากับ 5 คน
+                Server = s
+                foundSuitableServer = true
+                break
             end
         end
-    end
-    
-    if bestServer then
-        print("🏆 server ที่ดีที่สุด: " .. bestServer.id)
-        print("👥 ผู้เล่น: " .. bestServer.playing .. "/" .. bestServer.maxPlayers)
-        print("📡 Ping: " .. (bestServer.ping or "N/A") .. "ms")
-        return bestServer
-    else
-        updateStatus("❌ ไม่พบ server เหมาะสม", Color3.fromRGB(255, 100, 100))
-        return nil
-    end
-end
+        Next = Servers.nextPageCursor
+    until Server or not Next  -- หากเจอเซิร์ฟเวอร์ที่ต้องการหรือไม่มีเซิร์ฟเวอร์เพิ่มเติม
 
--- ตรวจเซิร์ฟปัจจุบัน
-local function isCurrentServerTooFull()
-    local currentPlayerCount = #Players:GetPlayers()
-    local isFull = currentPlayerCount > CONFIG.maxPlayers
-    
-    if isFull then
-        updateStatus("⚠️ Server เต็ม! (" .. currentPlayerCount .. "/" .. CONFIG.maxPlayers .. ")", Color3.fromRGB(255, 100, 100))
-    else
-        updateStatus("✅ Server ปกติ (" .. currentPlayerCount .. "/" .. CONFIG.maxPlayers .. ")", Color3.fromRGB(100, 255, 100))
-    end
-    
-    return isFull
-end
+    if foundSuitableServer then
+        -- ตรวจสอบจำนวนผู้เล่นในเซิร์ฟเวอร์ปัจจุบัน
+        local currentPlayerCount = #Players:GetPlayers()
 
--- ย้ายเซิร์ฟ
-local function attemptTeleport()
-    if tick() - lastTeleport < CONFIG.teleportCooldown then 
-        print("⏰ รอ cooldown อีก " .. math.ceil(CONFIG.teleportCooldown - (tick() - lastTeleport)) .. " วินาที")
-        return 
-    end
+        if currentPlayerCount > 5 then  -- เปลี่ยนตัวเลขตามความต้องการ
+            countdownLabel.Text = "Teleporting in 5 seconds..."
+            
+            -- นับถอยหลัง 5 วินาที
+            for i = 5, 1, -1 do
+                countdownLabel.Text = "Teleporting in " .. i .. " seconds..."
+                wait(1)
+            end
 
-    local newServer = findBestServer()
-    if newServer then
-        updateStatus("🎯 กำลังย้าย server...", Color3.fromRGB(100, 255, 100))
-        lastTeleport = tick()
-        
-        -- Teleport
-        task.spawn(function()
-            task.wait(1)
-            TeleportService:TeleportToPlaceInstance(PlaceId, newServer.id, player)
-        end)
-    end
-end
-
--- ลูปหลัก
-task.spawn(function()
-    task.wait(3) -- รอให้โหลดเสร็จ
-    updateStatus("🔵 ระบบทำงานแล้ว", Color3.fromRGB(100, 200, 255))
-    
-    while true do
-        if isCurrentServerTooFull() then
-            attemptTeleport()
+            -- ทำการเทเลพอร์ตผู้เล่น
+            TPS:TeleportToPlaceInstance(PlaceId, Server.id, player)
+            countdownLabel.Text = "Teleporting now..."
+            break  -- ออกจากลูป `while true` เมื่อเทเลพอร์ตสำเร็จ
+        else
+            countdownLabel.Text = "Current server has 5 or fewer players. Not teleporting."
         end
-        task.wait(CONFIG.checkInterval)
+    else
+        countdownLabel.Text = "All servers have more than 5 players. Staying in the current server."
     end
-end)
 
--- Event handlers
-Players.PlayerAdded:Connect(function()
-    task.wait(1)
-    task.spawn(isCurrentServerTooFull)
-end)
-
-Players.PlayerRemoving:Connect(function()
-    task.wait(1)
-    task.spawn(isCurrentServerTooFull)
-end)
-
-print("🚀 Auto Server Hop (Simple) เริ่มทำงานแล้ว!")
-print("📊 หา server ตาม: " .. CONFIG.findBy .. " (เปลี่ยนได้ใน CONFIG)")
-print("👥 Max players: " .. CONFIG.maxPlayers)
+    -- รอ 10 วินาทีก่อนจะตรวจสอบเซิร์ฟเวอร์ใหม่อีกครั้ง
+    wait(10)
+end
