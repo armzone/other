@@ -4,7 +4,7 @@ local CONFIG = {
     checkInterval = 5, -- วินาที
     teleportCooldown = 15, -- วินาที (เพิ่มขึ้นเพื่อป้องกัน rate limit)
     maxRetries = 3,
-    maxPing = 200 -- กรอง server ที่ ping เกินกว่านี้
+    maxPing = 500 -- กรอง server ที่ ping เกินกว่านี้
 }
 
 local HttpService = game:GetService("HttpService")
@@ -186,7 +186,7 @@ local function isCurrentServerTooFull()
     end
 end
 
--- หาเซิร์ฟที่คนน้อยที่สุด (ใช้ sortOrder=Asc)
+-- หาเซิร์ฟที่คนน้อยที่สุด (ใช้ sortOrder=Asc + Debug)
 local function findBestServer()
     if isSearching then return nil end
     isSearching = true
@@ -196,39 +196,78 @@ local function findBestServer()
     -- ใช้ sortOrder=Asc เพื่อได้ server คนน้อยที่สุดก่อน
     local url = "https://games.roblox.com/v1/games/" .. PlaceId .. "/servers/Public?sortOrder=Asc&limit=100"
     
+    print("🌐 กำลังเรียก API: " .. url)
+    
     local success, response = pcall(function()
         return HttpService:GetAsync(url)
     end)
     
-    isSearching = false
-    
     if not success then
-        print("❌ ไม่สามารถเชื่อมต่อ API ได้")
+        print("❌ ไม่สามารถเชื่อมต่อ API ได้: " .. tostring(response))
         updateUI(0, "❌ เชื่อมต่อ API ไม่ได้", Color3.fromRGB(255, 100, 100))
+        isSearching = false
         return nil
     end
     
-    local data = HttpService:JSONDecode(response)
-    local validServers = {}
+    print("✅ ได้ response จาก API แล้ว")
     
-    -- กรอง server ที่เหมาะสม
-    for _, server in ipairs(data.data or {}) do
+    local success2, data = pcall(function()
+        return HttpService:JSONDecode(response)
+    end)
+    
+    if not success2 then
+        print("❌ ไม่สามารถ decode JSON ได้: " .. tostring(data))
+        updateUI(0, "❌ ข้อมูล API ผิดพลาด", Color3.fromRGB(255, 100, 100))
+        isSearching = false
+        return nil
+    end
+    
+    isSearching = false
+    
+    print("📊 ข้อมูลที่ได้จาก API:")
+    print("📈 จำนวน servers ทั้งหมด: " .. #(data.data or {}))
+    print("📋 รายละเอียด servers (แค่ 10 อันดับแรก):")
+    
+    local validServers = {}
+    local debugCount = 0
+    
+    -- แสดงข้อมูล server ที่ได้มา
+    for i, server in ipairs(data.data or {}) do
+        if debugCount < 10 then -- แสดงแค่ 10 อันแรก
+            local status = (server.id == JobId) and "[ปัจจุบัน]" or ""
+            print(string.format("  %d. ID: %s | คน: %d/%d | Ping: %dms %s", 
+                i, server.id, server.playing, server.maxPlayers, server.ping or 999, status))
+            debugCount = debugCount + 1
+        end
+        
+        -- กรอง server ที่เหมาะสม
         if server.id ~= JobId and server.playing <= CONFIG.maxPlayers and server.playing >= 1 then
-            -- เช็ค ping ถ้ามี
             local serverPing = server.ping or 999
-            if serverPing < 200 then -- กรอง server ping สูงเกินไป
+            if serverPing <= CONFIG.maxPing then
                 table.insert(validServers, {
                     id = server.id,
                     playing = server.playing,
                     maxPlayers = server.maxPlayers,
                     ping = serverPing
                 })
+                print("✅ Server เหมาะสม: " .. server.id .. " | คน: " .. server.playing .. " | Ping: " .. serverPing .. "ms")
+            else
+                print("❌ Ping สูงเกินไป: " .. server.id .. " | Ping: " .. serverPing .. "ms")
             end
+        elseif server.id == JobId then
+            print("⚠️ ข้าม server ปัจจุบัน: " .. server.id)
+        elseif server.playing > CONFIG.maxPlayers then
+            print("⚠️ คนเยอะเกินไป: " .. server.id .. " | คน: " .. server.playing)
+        elseif server.playing < 1 then
+            print("⚠️ Server ว่าง: " .. server.id .. " | คน: " .. server.playing)
         end
     end
     
+    print("🎯 จำนวน servers ที่เหมาะสม: " .. #validServers)
+    
     if #validServers == 0 then
         print("❌ ไม่พบเซิร์ฟเวอร์ที่เหมาะสม")
+        print("📋 เงื่อนไข: คน 1-" .. CONFIG.maxPlayers .. ", Ping <= " .. CONFIG.maxPing .. "ms")
         updateUI(0, "❌ ไม่พบ server เหมาะสม", Color3.fromRGB(255, 100, 100))
         return nil
     end
@@ -236,7 +275,7 @@ local function findBestServer()
     -- เนื่องจากใช้ sortOrder=Asc แล้ว server แรกจึงเป็น server ที่คนน้อยที่สุด
     local selectedServer = validServers[1]
     
-    print("🎯 พบ server คนน้อย!")
+    print("🎯 เลือก server คนน้อยที่สุด!")
     print("📊 ID: " .. selectedServer.id)
     print("👥 ผู้เล่น: " .. selectedServer.playing .. "/" .. selectedServer.maxPlayers)
     print("📡 Ping: " .. selectedServer.ping .. "ms")
