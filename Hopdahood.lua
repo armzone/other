@@ -90,7 +90,7 @@ local function findBestServer()
     updateStatus("🔍 กำลังค้นหา server...", Color3.fromRGB(255, 255, 0))
     
     local success, response = pcall(function()
-        return HttpService:GetAsync("https://games.roblox.com/v1/games/" .. PlaceId .. "/servers/Public?limit=100")
+        return HttpService:GetAsync("https://games.roblox.com/v1/games/" .. PlaceId .. "/servers/Public?limit=10")
     end)
     
     if not success then
