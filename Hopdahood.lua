@@ -4,7 +4,7 @@ local CONFIG = {
     checkInterval = 5, -- วินาที
     teleportCooldown = 15, -- วินาที (เพิ่มขึ้นเพื่อป้องกัน rate limit)
     maxRetries = 3,
-    searchPages = 5 -- เพิ่มจำนวนหน้าที่ค้นหา
+    maxPing = 200 -- กรอง server ที่ ping เกินกว่านี้
 }
 
 local HttpService = game:GetService("HttpService")
@@ -186,94 +186,77 @@ local function isCurrentServerTooFull()
     end
 end
 
--- หาเซิร์ฟที่คนน้อยที่สุด (เรียงลำดับ)
+-- หาเซิร์ฟที่คนน้อยที่สุด (ใช้ sortOrder=Asc)
 local function findBestServer()
     if isSearching then return nil end
     isSearching = true
     
-    updateUI(0, "🔍 กำลังค้นหา server ที่ดีที่สุด...", Color3.fromRGB(100, 200, 255))
+    updateUI(0, "🔍 กำลังค้นหา server คนน้อย...", Color3.fromRGB(100, 200, 255))
     
-    local allServers = {}
-    local cursor = ""
-    local baseUrl = "https://games.roblox.com/v1/games/%s/servers/Public?sortOrder=Asc&limit=100&cursor=%s"
+    -- ใช้ sortOrder=Asc เพื่อได้ server คนน้อยที่สุดก่อน
+    local url = "https://games.roblox.com/v1/games/" .. PlaceId .. "/servers/Public?sortOrder=Asc&limit=100"
     
-    -- ค้นหาทุกหน้าที่เป็นไปได้
-    for page = 1, CONFIG.searchPages do
-        local success, response = pcall(function()
-            local url = string.format(baseUrl, PlaceId, cursor)
-            return HttpService:GetAsync(url)
-        end)
-        
-        if not success then 
-            print("⚠️ ไม่สามารถดึงข้อมูลหน้า " .. page .. " ได้")
-            break 
-        end
-        
-        local data = HttpService:JSONDecode(response)
-        
-        for _, server in ipairs(data.data or {}) do
-            if server.id ~= JobId then -- ไม่รวมเซิร์ฟปัจจุบัน
-                table.insert(allServers, {
-                    id = server.id,
-                    playing = server.playing,
-                    maxPlayers = server.maxPlayers,
-                    ping = server.ping or 999
-                })
-            end
-        end
-        
-        if not data.nextPageCursor then break end
-        cursor = data.nextPageCursor
-        task.wait(0.3) -- ลด rate limit
-    end
+    local success, response = pcall(function()
+        return HttpService:GetAsync(url)
+    end)
     
     isSearching = false
     
-    if #allServers == 0 then
-        print("❌ ไม่พบเซิร์ฟเวอร์ใดๆ")
+    if not success then
+        print("❌ ไม่สามารถเชื่อมต่อ API ได้")
+        updateUI(0, "❌ เชื่อมต่อ API ไม่ได้", Color3.fromRGB(255, 100, 100))
         return nil
     end
     
-    -- เรียงตามจำนวนผู้เล่นน้อยที่สุด แต่ไม่ใช่เซิร์ฟว่าง และ ping ที่ดี
-    table.sort(allServers, function(a, b)
-        -- ให้น้ำหนักกับเซิร์ฟที่มีคนแต่ไม่เยอะ
-        local aScore = a.playing + (a.ping / 100)  
-        local bScore = b.playing + (b.ping / 100)
-        return aScore < bScore
-    end)
+    local data = HttpService:JSONDecode(response)
+    local validServers = {}
     
-    -- เลือกเซิร์ฟที่ดีที่สุด 5 อันดับแรก แล้วสุ่ม
-    local bestServers = {}
-    for i = 1, math.min(5, #allServers) do
-        if allServers[i].playing <= CONFIG.maxPlayers then
-            table.insert(bestServers, allServers[i])
+    -- กรอง server ที่เหมาะสม
+    for _, server in ipairs(data.data or {}) do
+        if server.id ~= JobId and server.playing <= CONFIG.maxPlayers and server.playing >= 1 then
+            -- เช็ค ping ถ้ามี
+            local serverPing = server.ping or 999
+            if serverPing < 200 then -- กรอง server ping สูงเกินไป
+                table.insert(validServers, {
+                    id = server.id,
+                    playing = server.playing,
+                    maxPlayers = server.maxPlayers,
+                    ping = serverPing
+                })
+            end
         end
     end
     
-    if #bestServers == 0 then
-        print("❌ ไม่พบเซิร์ฟเวอร์ที่มีผู้เล่น <= " .. CONFIG.maxPlayers)
+    if #validServers == 0 then
+        print("❌ ไม่พบเซิร์ฟเวอร์ที่เหมาะสม")
+        updateUI(0, "❌ ไม่พบ server เหมาะสม", Color3.fromRGB(255, 100, 100))
         return nil
     end
     
-    local selectedServer = bestServers[math.random(#bestServers)]
-    print("🎯 เลือกเซิร์ฟ ID: " .. selectedServer.id .. " | ผู้เล่น: " .. selectedServer.playing .. "/" .. selectedServer.maxPlayers .. " | Ping: " .. selectedServer.ping)
+    -- เนื่องจากใช้ sortOrder=Asc แล้ว server แรกจึงเป็น server ที่คนน้อยที่สุด
+    local selectedServer = validServers[1]
+    
+    print("🎯 พบ server คนน้อย!")
+    print("📊 ID: " .. selectedServer.id)
+    print("👥 ผู้เล่น: " .. selectedServer.playing .. "/" .. selectedServer.maxPlayers)
+    print("📡 Ping: " .. selectedServer.ping .. "ms")
     
     return selectedServer
 end
 
--- ย้ายเซิร์ฟ (ปรับปรุงแล้ว)
+        -- ย้ายเซิร์ฟ (ปรับปรุงแล้ว)
 local function attemptTeleport()
     if tick() - lastTeleport < CONFIG.teleportCooldown then 
         return 
     end
 
-    updateUI(0, "⚠️ Server เต็ม! กำลังหา server ที่ดีที่สุด...", Color3.fromRGB(255, 100, 100))
-    print("⚠️ เซิร์ฟคนเกิน " .. CONFIG.maxPlayers .. " → กำลังค้นหาเซิร์ฟที่ดีที่สุด...")
+    updateUI(0, "⚠️ Server เต็ม! กำลังหา server คนน้อย...", Color3.fromRGB(255, 100, 100))
+    print("⚠️ เซิร์ฟคนเกิน " .. CONFIG.maxPlayers .. " → กำลังค้นหาเซิร์ฟคนน้อย...")
 
     local newServer = findBestServer()
     if newServer then
-        updateUI(newServer.playing, "🎯 กำลังย้ายไป server ที่ดีที่สุด...", Color3.fromRGB(100, 255, 100))
-        print("🎯 ย้ายไปเซิร์ฟ ID: " .. newServer.id .. " | ผู้เล่น: " .. newServer.playing .. " | Ping: " .. (newServer.ping or "N/A"))
+        updateUI(newServer.playing, "🎯 กำลังย้ายไป server คนน้อย...", Color3.fromRGB(100, 255, 100))
+        print("🎯 ย้ายไป server คนน้อยที่สุด!")
         lastTeleport = tick()
         
         -- เพิ่ม safety check
@@ -282,8 +265,8 @@ local function attemptTeleport()
             TeleportService:TeleportToPlaceInstance(PlaceId, newServer.id, player)
         end)
     else
-        updateUI(0, "❌ ไม่พบ server ที่เหมาะสม", Color3.fromRGB(255, 100, 100))
-        warn("❌ ไม่พบเซิร์ฟเวอร์ที่เหมาะสม (คน <= " .. CONFIG.maxPlayers .. ")")
+        updateUI(0, "❌ ไม่พบ server คนน้อย", Color3.fromRGB(255, 100, 100))
+        warn("❌ ไม่พบเซิร์ฟเวอร์ที่เหมาะสม (คน <= " .. CONFIG.maxPlayers .. ", ping <= " .. CONFIG.maxPing .. "ms)")
     end
 end
 
@@ -320,5 +303,5 @@ game:GetService("GuiService").ErrorMessageChanged:Connect(function()
 end)
 
 print("🚀 Auto Server Hop v2.0 เริ่มทำงานแล้ว!")
-print("📊 การตั้งค่า: Max Players = " .. CONFIG.maxPlayers .. ", Check Interval = " .. CONFIG.checkInterval .. "s")
-print("🎯 ระบบจะค้นหา server ที่มีผู้เล่นน้อยที่สุดและ ping ที่ดีที่สุดโดยอัตโนมัติ")
+print("📊 การตั้งค่า: Max Players = " .. CONFIG.maxPlayers .. ", Max Ping = " .. CONFIG.maxPing .. "ms")
+print("🎯 ใช้ sortOrder=Asc เพื่อหา server ที่มีผู้เล่นน้อยที่สุดโดยตรง")
